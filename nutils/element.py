@@ -101,10 +101,32 @@ class Element( object ):
 class Reference( cache.Immutable ):
   'reference element'
 
-  def __init__( self, vertices ):
+  def __init__( self, vertices, check_edges=True ):
     self.vertices = numpy.asarray( vertices )
     assert self.vertices.dtype == int
     self.nverts, self.ndims = self.vertices.shape
+    if check_edges:
+      self._check_edges()
+
+  def _check_edges( self, decimal=10 ):
+    if self.ndims == 0:
+      return
+    x, w = self.getischeme( 'gauss1' )
+    volume = w.sum()
+    assert volume > 0
+    check_volume = 0
+    check_zero = 0
+    L = []
+    for trans, edge in self.edges:
+      xe, we = edge.getischeme( 'gauss1' )
+      w_normal = we[:,_] * rational.ext( trans.linear ).astype( float )
+      if trans.isflipped:
+        w_normal = -w_normal
+      L.append(( trans, edge, trans.apply(xe), numpy.linalg.norm(w_normal.sum(0)), w_normal ))
+      check_zero += w_normal.sum(0)
+      check_volume += numeric.contract( trans.apply(xe), w_normal, axis=0 )
+    numpy.testing.assert_almost_equal( check_zero, 0, decimal, '%s fails divergence test' % self )
+    numpy.testing.assert_almost_equal( check_volume, volume, decimal, '%s fails divergence test' % self )
 
   @cache.property
   def edgedict( self ):
@@ -242,7 +264,7 @@ class Reference( cache.Immutable ):
       if len(not_on_interface) == 1:
         trans = tritrans[i]
         etrans, edge = simplex.edges[ not_on_interface[0] ]
-        mtrans = trans << etrans
+        mtrans = ( trans << etrans ).flat
         ( ipos if sign[i] > 0 else ineg ).append( mtrans )
         ( bpos if sign[i] > 0 else bneg )[mtrans] = edge
 
@@ -294,14 +316,16 @@ class Reference( cache.Immutable ):
         posref, postrim = poschild
         pos[ctrans] = posref
         for etrans in postrim:
-          bpos[ ctrans << etrans ] = ForwardReference( posref.edgedict[ etrans ] )
-          ipos.append( ctrans << etrans )
+          cetrans = ( ctrans << etrans ).flat
+          bpos[ cetrans ] = ForwardReference( posref.edgedict[ etrans ] )
+          ipos.append( cetrans )
       if negchild:
         negref, negtrim = negchild
         neg[ctrans] = negref
         for etrans in negtrim:
-          bneg[ ctrans << etrans ] = ForwardReference( negref.edgedict[ etrans ] )
-          ineg.append( ctrans << etrans )
+          cetrans = ( ctrans << etrans ).flat
+          bneg[ cetrans ] = ForwardReference( negref.edgedict[ etrans ] )
+          ineg.append( cetrans )
 
     if not neg:
       assert not ineg # for now
@@ -614,7 +638,8 @@ class SimplexReference( Reference ):
   @cache.property
   def child_transforms( self ):
     if self.ndims == 0:
-      return []
+      return [
+        transform.affine( 1, [], 2 ) ]
     if self.ndims == 1:
       return [
         transform.affine( 1, [0], 2 ),
@@ -649,6 +674,10 @@ class SimplexReference( Reference ):
   def edges( self ):
     edge = SimplexReference( self.ndims-1 )
     eye = numpy.eye( self.ndims, dtype=int )
+    if self.ndims == 1:
+      linear = numpy.zeros( (1,0), dtype=int )
+      return [ ( transform.affine( linear, [1], isflipped=False ), edge ),
+               ( transform.affine( linear, [0], isflipped=True  ), edge ) ]
     return [ ( transform.affine( (eye[1:]-eye[0]).T, eye[0] ), edge ) ] \
          + [ ( transform.affine( eye[ list(range(i))+list(range(i+1,self.ndims)) ].T, isflipped=(i%2==0) ), edge )
                   for i in range( self.ndims ) ]
@@ -746,7 +775,7 @@ class TensorReference( Reference ):
          + [ ( transform.affine(
                 rational.blockdiag([ rational.eye(self.ref1.ndims), trans2.linear ]),
                 rational.concatenate([ rational.zeros(self.ref1.ndims), trans2.offset ]),
-                isflipped=not trans2.isflipped ), self.ref1 * edge2 )
+                isflipped=trans2.isflipped if self.ref1.ndims%2==0 else not trans2.isflipped ), self.ref1 * edge2 )
                   for trans2, edge2 in self.ref2.edges ]
 
   @cache.property
@@ -904,7 +933,7 @@ class MosaicReference( Reference ):
     for trans, ref in self.edges:
       assert trans.fromdims == ref.ndims
     vertices = numpy.zeros( (0,ndims), dtype=int )
-    Reference.__init__( self, vertices )
+    Reference.__init__( self, vertices, check_edges=bool(edgedict) )
 
   def getischeme( self, ischeme ):
     'get integration scheme'
@@ -917,7 +946,7 @@ class MosaicReference( Reference ):
       points, weights = child.getischeme( ischeme )
       allcoords.append( trans.apply(points) )
       if weights is not None:
-        allweights.append( weights * float(trans.det) )
+        allweights.append( weights * abs(float(trans.det)) )
 
     coords = numpy.concatenate( allcoords, axis=0 )
     weights = numpy.concatenate( allweights, axis=0 ) \

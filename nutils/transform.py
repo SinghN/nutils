@@ -123,6 +123,11 @@ class TransformChain( tuple ):
   def __repr__( self ):
     return 'TransformChain( %s )' % (self,)
 
+  @property
+  def flat( self ):
+    return self if len(self) == 1 \
+      else affine( self.linear, self.offset, isflipped=self.isflipped )
+
 
 ## TRANSFORM ITEMS
 

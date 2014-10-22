@@ -11,7 +11,8 @@ The rational module.
 """
 
 from __future__ import print_function, division
-import numpy
+import numpy, functools
+
 
 class Rational( object ):
 
@@ -23,15 +24,8 @@ class Rational( object ):
       numer = numpy.array( numer, dtype=numpy.int64 )
       numer.flags.writeable = False
     assert isint(numer)
-    if denom != 1 and not isfactored:
-      absnumers = numpy.unique( abs(numer) )[::-1].tolist() # unique descending
-      if not absnumers[-1]:
-        absnumers.pop() # ignore zero
-      common = denom
-      while absnumers and common > 1:
-        n = absnumers.pop()
-        while n: # GCD: Euclid's algorithm
-          common, n = n, common % n
+    if denom != 1 and numer.size and not isfactored:
+      common = gcd( denom, *numer.flat )
       if common != 1:
         numer = numer // common
         if numer.flags.writeable:
@@ -103,7 +97,8 @@ class Rational( object ):
     other = asarray( other )
     if not isrational( other ):
       return self.numer / float(self.denom) + other
-    return Rational( self.numer * other.denom + other.numer * self.denom, self.denom * other.denom )
+    common = gcd( self.denom, other.denom )
+    return Rational( self.numer * (other.denom//common) + other.numer * (self.denom//common), self.denom * (other.denom//common) )
 
   def __sub__( self, other ):
     if other is 0:
@@ -111,7 +106,8 @@ class Rational( object ):
     other = asarray( other )
     if not isrational( other ):
       return self.numer / float(self.denom) - other
-    return Rational( self.numer * other.denom - other.numer * self.denom, self.denom * other.denom )
+    common = gcd( self.denom, other.denom )
+    return Rational( self.numer * (other.denom//common) - other.numer * (self.denom//common), self.denom * (other.denom//common) )
 
   def __rsub__( self, other ):
     if other is 0:
@@ -171,21 +167,40 @@ class Rational( object ):
 
 isint = lambda a: numpy.issubdtype( a.dtype if isinstance(a,numpy.ndarray) else type(a), numpy.integer )
 
+zero = Rational( 0 )
 unit = Rational( 1 )
 
 def det( array ):
   array = asrational( array )
-  if array.shape == (1,1):
-    det = array[0,0]
-  elif array.shape == (2,2):
+  assert array.ndim == 2 and array.shape[0] == array.shape[1]
+
+  zeros = array.numer == 0
+  if zeros.any():
+    nzcols = zeros.sum( axis=0 )
+    nzrows = zeros.sum( axis=1 )
+    if max(nzcols) > max(nzrows):
+      j = numpy.argmax( nzcols )
+      IJ = [ (i,j) for i in (~zeros[:,j]).nonzero()[0] ]
+    else:
+      i = numpy.argmax( nzrows )
+      IJ = [ (i,j) for j in (~zeros[i,:]).nonzero()[0] ]
+    n = numpy.arange( len(array) )
+    # laplace's formula
+    return sum( det(array[numpy.ix_(n!=i,n!=j)]) * ( array[i,j] if (i+j)%2==0 else -array[i,j] )
+      for i, j in IJ ) if IJ else zero
+
+  if len(array) == 1:
+    retval = array[0,0]
+  elif len(array) == 2:
     ((a,b),(c,d)) = array.numer
-    det = Rational( a*d - b*c, array.denom**2 )
-  elif array.shape == (3,3):
+    retval = Rational( a*d - b*c, array.denom**2 )
+  elif len(array) == 3:
     ((a,b,c),(d,e,f),(g,h,i)) = array.numer
-    det = Rational( a*e*i + b*f*g + c*d*h - c*e*g - b*d*i - a*f*h, array.denom**3 )
+    retval = Rational( a*e*i + b*f*g + c*d*h - c*e*g - b*d*i - a*f*h, array.denom**3 )
   else:
     raise NotImplementedError( 'shape=' + str(array.shape) )
-  return det
+
+  return retval
 
 def invdet( array ):
   '''invdet(array) = inv(array) * det(array)'''
@@ -210,22 +225,29 @@ def inv( array ):
 def ext( array ):
   """Exterior
   For array of shape (n,n-1) return n-vector ex such that ex.array = 0 and
-  det(arr;ex) = ex.ex"""
+  det(ex;arr) = ex.ex"""
   array = asrational(array)
-  if array.shape == (1,0):
+  assert array.ndim == 2 and array.shape[0] == array.shape[1]+1
+  zeros = ( array.numer == 0 ).all( axis=1 )
+  if len(array) == 1:
     ext = ones( 1 )
-  elif array.shape == (2,1):
-    ((a,),(b,)) = array.numer * array.denom
-    ext = Rational( (-b,a) )
-  elif array.shape == (3,2):
-    ((a,b),(c,d),(e,f)) = array.numer * array.denom
-    ext = Rational( (c*f-e*d,e*b-a*f,a*d-c*b) )
+  elif len(array) == 2:
+    ((a,),(b,)) = array.numer
+    ext = Rational( (b,-a), array.denom, isfactored=True )
+  elif any(zeros):
+    alpha = det(array[~zeros])
+    (i,), = zeros.nonzero()
+    v = zeros * ( alpha.numer if i%2==0 else -alpha.numer )
+    ext = Rational( v, alpha.denom, True )
+  elif len(array) == 3:
+    ((a,b),(c,d),(e,f)) = array.numer
+    ext = Rational( (c*f-e*d,e*b-a*f,a*d-c*b), array.denom**2 )
   else:
     raise NotImplementedError( 'shape=%s' % (array.shape,) )
   # VERIFY
-  Av = concatenate( [array,ext[:,numpy.newaxis]], axis=1 )
-  assert equal( dot( ext, array ), 0 ).all()
-  assert equal( det(Av), dot(ext,ext) ).all()
+  Av = concatenate( [ext[:,numpy.newaxis],array], axis=1 )
+  assert equal( dot( ext, array ), 0 ).all(), 'array.shape={}'.format(array.shape)
+  assert equal( det(Av), dot(ext,ext) ).all(), 'array.shape={}'.format(array.shape)
   return ext
 
 def isrational( arr ):
@@ -290,5 +312,19 @@ def round( array, denom=1 ):
     return array
   numer = array * denom
   return Rational( ( numer - numpy.less(numer,0) + .5 ).astype( int ), denom )
+
+def gcd( *nums ):
+  absnums = numpy.unique( numpy.abs(nums) )[::-1].tolist() # unique descending
+  if absnums[-1] == 0:
+    absnums.pop() # ignore zero
+  if not absnums:
+    return 1
+  common = absnums.pop()
+  while absnums and common > 1:
+    n = absnums.pop()
+    while n: # GCD: Euclid's algorithm
+      common, n = n, common % n
+  return common
+  
 
 # vim:shiftwidth=2:foldmethod=indent:foldnestmax=2

@@ -28,6 +28,10 @@ class TransformChain( tuple ):
   def __getslice__( self, i, j ):
     return TransformChain( tuple.__getslice__( self, i, j ) )
 
+  def items( self ):
+    for item in self:
+      yield TransformChain( [item] )
+
   @property
   def todims( self ):
     return self[0].todims
@@ -161,7 +165,7 @@ class Scale( TransformItem ):
     assert linear.ndim == 0 and offset.ndim == 1
     self.linear = linear
     self.offset = offset
-    TransformItem.__init__( self, offset.shape[0], offset.shape[0], False )
+    TransformItem.__init__( self, offset.shape[0], offset.shape[0], float(linear) < 0 )
 
   @property
   def flipped( self ):
@@ -281,22 +285,29 @@ class RootTransEdges( VertexTransform ):
 
 ## CONSTRUCTORS
 
-def affine( linear=None, offset=None, numer=1, isflipped=False ):
+def affine_item( linear=None, offset=None, numer=1, isflipped=False ):
   r_offset = rational.asrational( offset ) / numer if offset is not None else rational.zeros( len(linear) )
   r_linear = rational.asrational( linear ) / numer if linear is not None else rational.unit
-  return TransformChain((
-         Matrix( r_linear, r_offset, isflipped ) if r_linear.ndim
-    else Scale( r_linear, r_offset ) if r_linear != rational.unit
-    else Shift( r_offset ), ))
+  if r_linear.shape == (1,1):
+    r_linear = r_linear[0,0]
+  if r_linear.ndim:
+    return Matrix( r_linear, r_offset, isflipped )
+  assert not isflipped
+  if r_linear != rational.unit:
+    return Scale( r_linear, r_offset )
+  return Shift( r_offset )
+
+def affine( *args, **kwargs ):
+  return TransformChain([ affine_item( *args, **kwargs ) ])
 
 def roottrans( name, shape ):
-  return TransformChain(( RootTrans( name, shape ), ))
+  return TransformChain([ RootTrans( name, shape ) ])
 
 def roottransedges( name, shape ):
-  return TransformChain(( RootTransEdges( name, shape ), ))
+  return TransformChain([ RootTransEdges( name, shape ) ])
 
 def maptrans( coords, vertices ):
-  return TransformChain(( MapTrans( coords, vertices ), ))
+  return TransformChain([ MapTrans( coords, vertices ) ])
 
 def equivalent( trans1, trans2 ):
   trans1 = TransformChain( trans1 )
@@ -321,5 +332,19 @@ def canonical( transchain ):
   chain.append( trans1 )
   return TransformChain( chain )
 
+def solve( transA, transB ): # A << X = B
+  A = transA.linear
+  B = transB.linear
+  assert A.ndim == B.ndim == 2
+  a = transA.offset
+  b = transB.offset
+  AAinv = rational.inv( rational.dot( A.T, A ) )
+  X = rational.dot( AAinv, rational.dot( A.T, B ) ) # A X = B
+  x = rational.dot( AAinv, rational.dot( A.T, b-a ) ) # A x + a = b
+  transX = affine( X, x )
+  transAX = transA << transX
+  assert transAX.linear == transB.linear
+  assert transAX.offset == transB.offset
+  return transX
 
 # vim:shiftwidth=2:foldmethod=indent:foldnestmax=2

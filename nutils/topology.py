@@ -573,16 +573,22 @@ class Topology( object ):
 
     numer = rational.round(1./eps)
     poselems = []
+    postrims = []
     negelems = []
+    negtrims = []
     __log__ = log.iter( 'elem', self )
     for elem in __log__:
       pos, neg = elem.trim( levelset=levelset, maxrefine=maxrefine, numer=numer )
       if pos:
-        poselems.append( pos )
+        poselem, postrim = pos
+        poselems.append( poselem )
+        postrims.extend( poselem.edge(trans) for trans in postrim )
       if neg:
-        negelems.append( neg )
-    return TrimmedTopology( self, poselems ), \
-           TrimmedTopology( self, negelems )
+        negelem, negtrim = neg
+        negelems.append( negelem )
+        negtrims.extend( negelem.edge(trans) for trans in negtrim )
+    return TrimmedTopology( self, poselems, postrims ), \
+           TrimmedTopology( self, negelems, negtrims )
 
   def elem_project( self, funcs, degree, ischeme=None, check_exact=False ):
 
@@ -1232,8 +1238,15 @@ class TrimmedTopology( Topology ):
 
   @cache.property
   def boundary( self ):
-    warnings.warn( 'warning: boundaries of trimmed topologies are not trimmed' )
-    belems = list( self.trimmed ) + [ belem for belem in self.basetopo.boundary if belem.transform.lookup(self.edict) ]
+    belems = list( self.trimmed )
+    for belem in self.basetopo.boundary:
+      head = belem.transform.lookup(self.edict)
+      if head:
+        tail = belem.transform[len(head):]
+        belem = self.edict[head].edge(tail)
+        if belem:
+          belems.append( belem )
+
     boundary = TrimmedTopology( self.basetopo.boundary, belems )
     if self.trimmed:
       boundary['trimmed'] = Topology( self.trimmed )

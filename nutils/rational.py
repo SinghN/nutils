@@ -20,7 +20,7 @@ class Rational( object ):
   def __init__( self, numer, denom=1, isfactored=False ):
     assert isint(denom) and denom > 0
     if not isinstance( numer, numpy.ndarray ):
-      numer = numpy.array( numer )
+      numer = numpy.array( numer, dtype=numpy.int64 )
       numer.flags.writeable = False
     assert isint(numer)
     if denom != 1 and not isfactored:
@@ -203,7 +203,9 @@ def invdet( array ):
   return invdet
   
 def inv( array ):
-  return invdet( array ) / det( array )
+  inv = invdet( array ) / det( array )
+  assert equal( dot( array, inv ), eye( len(array) ) ).all()
+  return inv
 
 def ext( array ):
   """Exterior
@@ -221,11 +223,9 @@ def ext( array ):
   else:
     raise NotImplementedError( 'shape=%s' % (array.shape,) )
   # VERIFY
-  A = asfloat( array )
-  v = asfloat( ext )
-  Av = numpy.concatenate( [A,v[:,numpy.newaxis]], axis=1 )
-  numpy.testing.assert_almost_equal( numpy.dot( v, A ), 0 )
-  numpy.testing.assert_almost_equal( numpy.linalg.det(Av), numpy.dot(v,v) )
+  Av = concatenate( [array,ext[:,numpy.newaxis]], axis=1 )
+  assert equal( dot( ext, array ), 0 ).all()
+  assert equal( det(Av), dot(ext,ext) ).all()
   return ext
 
 def isrational( arr ):
@@ -236,6 +236,10 @@ def asrational( arr ):
 
 def frac( a, b ):
   return asrational(a) / asrational(b)
+
+def defrac( frac ):
+  frac = asrational( frac )
+  return frac.numer, frac.denom
 
 def asarray( arr ):
   if isrational( arr ):
@@ -261,12 +265,14 @@ def zeros( shape ):
 def ones( shape ):
   return Rational( numpy.ones(shape,dtype=int) )
 
-def stack( args ):
-  arg1, arg2 = args
-  arg1 = asrational( arg1 )
-  arg2 = asrational( arg2 )
-  assert arg1.ndim == arg2.ndim == 1
-  return Rational( numpy.concatenate([ arg1.numer * arg2.denom, arg2.numer * arg1.denom ]), arg1.denom * arg2.denom )
+def equal( A, B ):
+  A = asrational( A )
+  B = asrational( B )
+  return numpy.equal( A.numer * B.denom, B.numer * A.denom )
+
+def concatenate( args, axis=0 ):
+  arg1, arg2 = map( asrational, args )
+  return Rational( numpy.concatenate([ arg1.numer * arg2.denom, arg2.numer * arg1.denom ], axis=axis), arg1.denom * arg2.denom )
 
 def blockdiag( args ):
   arg1, arg2 = args
